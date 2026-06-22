@@ -74,9 +74,8 @@ RapidDB
 │   ├── Server.cpp
 │   └── main.cpp
 ├── helper.md
-├── Mk_file
+├── Makefile
 ├── README.md
-└── test_all.sh
 ```
 
 ---
