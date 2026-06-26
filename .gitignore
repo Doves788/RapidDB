@@ -1,0 +1,11 @@
+# Compiled binaries and object files
+build/
+RapidDB
+*.o
+*.d
+
+# Local database dumps
+dump.rapiddb
+
+# VS Code settings
+.vscode/

@@ -148,7 +148,7 @@ std::vector<std::string> Database::lget(const std::string& key) {
     return {}; 
 }
 
-ssize_t Database::llen(const std::string& key) {
+long long Database::llen(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
     auto it = list_store.find(key);
     if (it != list_store.end()) 
@@ -326,7 +326,7 @@ std::vector<std::string> Database::hvals(const std::string& key) {
     return values;
 }
 
-ssize_t Database::hlen(const std::string& key) {
+long long  Database::hlen(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
     auto it = hash_store.find(key);
     return (it != hash_store.end()) ? it->second.size() : 0;
