@@ -37,7 +37,7 @@ A quick scan of what's non-trivial under the hood:
 - [Docker & Container Deployment](#-docker--container-deployment)
 - [Persistence](#-persistence)
 - [Usage Examples](#-usage-examples)
-- [Resume & Interview Talking Points](#-resume--interview-talking-points)
+- [Roadmap & Future Enhancements](#-roadmap--future-enhancements)
 - [License](#-license)
 
 ---
@@ -313,18 +313,14 @@ HGETALL user
 
 ---
 
-## 💼 Resume & Interview Talking Points
+## 🚀 Roadmap & Future Enhancements
 
-Depending on the specific engineering role you are interviewing for, highlight these concrete metrics and achievements:
-
-### For C++ / Systems / Infrastructure Roles:
-> *"Architected a Redis-compatible in-memory store in C++17 implementing the RESP wire protocol, multi-threaded connection handling, and lazy TTL eviction. Profiled via GCC AddressSanitizer and LeakSanitizer to guarantee zero memory leaks during 10,000 concurrent key insertions and bulk evictions."*
-
-### For Distributed Systems & Backend Roles:
-> *"Engineered a resilient protocol parser capable of gracefully handling malformed multi-bulk RESP frames, 1-byte slowloris TCP fragmentation, and burst client disconnects without server degradation; validated through an automated Python chaos testing suite."*
-
-### For General Software Engineering & DevOps Roles:
-> *"Containerized the database using a lightweight multi-stage Alpine Docker image and automated continuous integration pipelines via GitHub Actions, enforcing AddressSanitizer quality gates on every commit."*
+- [ ] **I/O Multiplexing (`epoll` / `io_uring`):** Transition from thread-per-connection to an event-driven non-blocking I/O loop to scale to 100,000+ idle concurrent connections.
+- [ ] **Fine-Grained Keyspace Partitioning:** Shard the internal database hash maps into $N$ buckets with independent mutex locks to eliminate write serialization under heavy load.
+- [ ] **Append-Only File (AOF) Persistence:** Provide write-ahead logging with `fsync` policies (`always`, `everysec`, `no`) for enterprise durability.
+- [ ] **Sorted Sets (`ZSET`):** Implement skip-lists or balanced trees for ordered rank and range queries.
+- [ ] **Transactions (`MULTI` / `EXEC`):** Provide atomic batch command execution.
+- [ ] **Pub/Sub Subsystem:** Message broking with channels and pattern subscriptions.
 
 ---
 
