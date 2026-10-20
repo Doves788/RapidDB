@@ -5,55 +5,104 @@
 #include <sstream>
 #include <algorithm>
 #include <exception>
-#include <iostream> // debug
+#include <cctype>
 
-// RESP parser:
-// *2\r\n$4\r\n\PING\r\n$4\r\nTEST\r\n
-// *2 -> array has 2 elements
-// $4 -> next string has 4 characters
-// PING
-// TEST
+// Helper to safely parse an integer
+static bool safeParseInt(const std::string& str, int& out) {
+    if (str.empty()) return false;
+    try {
+        size_t idx = 0;
+        long long val = std::stoll(str, &idx);
+        if (idx != str.size()) return false;
+        if (val < -2147483648LL || val > 2147483647LL) return false;
+        out = static_cast<int>(val);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
-std::vector<std::string> parseRespCommand(const std::string &input) {
-    std::vector<std::string> tokens;
-    if (input.empty()) return tokens;
+// Attempts to parse one full command from buffer.
+// Returns:
+//   true  -> either parsed successfully (tokens populated) or malformed (isMalformed = true)
+//   false -> need more data (incomplete frame)
+static bool parseRespFromBuffer(const std::string &input, std::vector<std::string> &tokens, size_t &bytesConsumed, bool &isMalformed) {
+    tokens.clear();
+    bytesConsumed = 0;
+    isMalformed = false;
+    if (input.empty()) return false;
 
-    // If it doesnt strart with '*', fallback to splitting by whitespace.
-    if (input[0] != '*') { 
-        std::istringstream iss(input);
+    // Inline command fallback (does not start with '*')
+    if (input[0] != '*') {
+        size_t newline = input.find('\n');
+        if (newline == std::string::npos) {
+            return false; // wait for full line
+        }
+        bytesConsumed = newline + 1;
+        std::string line = input.substr(0, newline);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        std::istringstream iss(line);
         std::string token;
-        while (iss >> token) 
+        while (iss >> token) {
             tokens.push_back(token);
-        return tokens;
+        }
+        return true;
     }
 
-    size_t pos = 0;
-    // Expect '*' followed by number of elements
-    if (input[pos] != '*') return tokens;
-    pos++; // skip '*'
-
-    // crlf = Carriage Return (\r), Line Feed (\n)
+    // Multi-bulk array: *<numElements>\r\n...
+    size_t pos = 1;
     size_t crlf = input.find("\r\n", pos);
-    if (crlf == std::string::npos) return tokens;
+    if (crlf == std::string::npos) {
+        return false; // need more data
+    }
 
-    int numElements = std::stoi(input.substr(pos, crlf - pos));
+    int numElements = 0;
+    if (!safeParseInt(input.substr(pos, crlf - pos), numElements) || numElements < 0 || numElements > 100000) {
+        isMalformed = true;
+        bytesConsumed = crlf + 2;
+        return true;
+    }
+
     pos = crlf + 2;
-
     for (int i = 0; i < numElements; i++) {
-        if (pos >= input.size() || input[pos] != '$') break; // format error
-        pos++; // skip '$'
+        if (pos >= input.size()) return false;
+        if (input[pos] != '$') {
+            isMalformed = true;
+            bytesConsumed = pos + 1;
+            return true;
+        }
+        pos++;
 
         crlf = input.find("\r\n", pos);
-        if (crlf == std::string::npos) break;
-        int len = std::stoi(input.substr(pos, crlf - pos));
-        pos = crlf + 2;
+        if (crlf == std::string::npos) return false;
 
-        if (pos + len > input.size()) break;
-        std::string token = input.substr(pos, len);
-        tokens.push_back(token);
-        pos += len + 2; // skip token and CRLF
+        int len = 0;
+        if (!safeParseInt(input.substr(pos, crlf - pos), len) || len < 0 || len > 100000000) {
+            isMalformed = true;
+            bytesConsumed = crlf + 2;
+            return true;
+        }
+
+        pos = crlf + 2;
+        if (pos + static_cast<size_t>(len) + 2 > input.size()) {
+            return false; // bulk string payload or CRLF hasn't arrived completely yet
+        }
+
+        tokens.push_back(input.substr(pos, len));
+        pos += len;
+
+        if (input[pos] != '\r' || input[pos + 1] != '\n') {
+            isMalformed = true;
+            bytesConsumed = pos + 2;
+            return true;
+        }
+        pos += 2;
     }
-    return tokens;
+
+    bytesConsumed = pos;
+    return true;
 }
 
 //----------------------
@@ -118,15 +167,14 @@ static std::string handleDel(const std::vector<std::string>& tokens, Database& d
 static std::string handleExpire(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 3)
         return "-Error: EXPIRE requires key and time in seconds\r\n";
-    try {
-        int seconds = std::stoi(tokens[2]);
-        if (db.expire(tokens[1], seconds))
-            return "+OK\r\n";
-        else
-            return "-Error: Key not found\r\n";
-    } catch (const std::exception&) {
+    int seconds = 0;
+    if (!safeParseInt(tokens[2], seconds)) {
         return "-Error: Invalid expiration time\r\n";
     }
+    if (db.expire(tokens[1], seconds))
+        return "+OK\r\n";
+    else
+        return "-Error: Key not found\r\n";
 }
 
 static std::string handleRename(const std::vector<std::string>& tokens, Database& db) {
@@ -137,7 +185,9 @@ static std::string handleRename(const std::vector<std::string>& tokens, Database
     return "-Error: Key not found or rename failed\r\n";
 }
 
-// List Opreations
+//----------------------
+// List Operations
+//----------------------
 static std::string handleLget(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 2)
         return "-Error: LGET requires a key\r\n";
@@ -155,7 +205,7 @@ static std::string handleLget(const std::vector<std::string>& tokens, Database& 
 static std::string handleLlen(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 2) 
         return "-Error: LLEN requires key\r\n";
-    ssize_t len = db.llen(tokens[1]);
+    long long len = db.llen(tokens[1]);
     return ":" + std::to_string(len) + "\r\n";
 }
 
@@ -165,7 +215,7 @@ static std::string handleLpush(const std::vector<std::string>& tokens, Database&
     for (size_t i = 2; i < tokens.size(); ++i) {
         db.lpush(tokens[1], tokens[i]);
     }
-    ssize_t len = db.llen(tokens[1]);
+    long long len = db.llen(tokens[1]);
     return ":" + std::to_string(len) + "\r\n";
 }
 
@@ -175,7 +225,7 @@ static std::string handleRpush(const std::vector<std::string>& tokens, Database&
     for (size_t i = 2; i < tokens.size(); ++i) {
         db.rpush(tokens[1], tokens[i]);
     }    
-    ssize_t len = db.llen(tokens[1]);
+    long long len = db.llen(tokens[1]);
     return ":" + std::to_string(len) + "\r\n";
 }
 
@@ -200,45 +250,44 @@ static std::string handleRpop(const std::vector<std::string>& tokens, Database& 
 static std::string handleLrem(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 4) 
         return "-Error: LREM requires key, count and value\r\n";
-    try {
-        int count = std::stoi(tokens[2]);
-        int removed = db.lrem(tokens[1], count, tokens[3]);
-        return ":" +std::to_string(removed) + "\r\n";
-    } catch (const std::exception&) {
+    int count = 0;
+    if (!safeParseInt(tokens[2], count)) {
         return "-Error: Invalid count\r\n";
     }
+    int removed = db.lrem(tokens[1], count, tokens[3]);
+    return ":" + std::to_string(removed) + "\r\n";
 }
 
 static std::string handleLindex(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 3) 
         return "-Error: LINDEX requires key and index\r\n";
-    try {
-        int index = std::stoi(tokens[2]);
-        std::string value;
-        if (db.lindex(tokens[1], index, value)) 
-            return "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
-        else 
-            return "$-1\r\n";
-    } catch (const std::exception&) {
+    int index = 0;
+    if (!safeParseInt(tokens[2], index)) {
         return "-Error: Invalid index\r\n";
     }
+    std::string value;
+    if (db.lindex(tokens[1], index, value)) 
+        return "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+    else 
+        return "$-1\r\n";
 }
 
 static std::string handleLset(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 4) 
-        return "-Error: LEST requires key, index and value\r\n";
-    try {
-        int index = std::stoi(tokens[2]);
-        if (db.lset(tokens[1], index, tokens[3]))
-            return "+OK\r\n";
-        else 
-            return "-Error: Index out of range\r\n";
-    } catch (const std::exception&) {
+        return "-Error: LSET requires key, index and value\r\n";
+    int index = 0;
+    if (!safeParseInt(tokens[2], index)) {
         return "-Error: Invalid index\r\n";
     }
+    if (db.lset(tokens[1], index, tokens[3]))
+        return "+OK\r\n";
+    else 
+        return "-Error: Index out of range\r\n";
 }
 
+//----------------------
 // Hash Operations
+//----------------------
 static std::string handleHset(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 4) 
         return "-Error: HSET requires key, field and value\r\n";
@@ -248,7 +297,7 @@ static std::string handleHset(const std::vector<std::string>& tokens, Database& 
 
 static std::string handleHget(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 3) 
-        return "-Error: HSET requires key and field\r\n";
+        return "-Error: HGET requires key and field\r\n";
     std::string value;
     if (db.hget(tokens[1], tokens[2], value))
         return "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
@@ -269,7 +318,7 @@ static std::string handleHdel(const std::vector<std::string>& tokens, Database& 
     return ":" + std::to_string(res ? 1 : 0) + "\r\n";
 }
 
-static std::string handleHgetall (const std::vector<std::string>& tokens, Database& db) {
+static std::string handleHgetall(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 2) 
         return "-Error: HGETALL requires key\r\n";
     auto hash = db.hgetall(tokens[1]);
@@ -309,7 +358,7 @@ static std::string handleHvals(const std::vector<std::string>& tokens, Database&
 static std::string handleHlen(const std::vector<std::string>& tokens, Database& db) {
     if (tokens.size() < 2) 
         return "-Error: HLEN requires key\r\n";
-    ssize_t len = db.hlen(tokens[1]);
+    long long len = db.hlen(tokens[1]);
     return ":" + std::to_string(len) + "\r\n";
 }
 
@@ -324,11 +373,7 @@ static std::string handleHmset(const std::vector<std::string>& tokens, Database&
     return "+OK\r\n";
 }
 
-Command_Handler::Command_Handler() {}
-
-std::string Command_Handler::processCommand(const std::string& commandLine) {
-    // Use RESP parser
-    auto tokens = parseRespCommand(commandLine);
+static std::string dispatchCommand(const std::vector<std::string>& tokens) {
     if (tokens.empty()) return "-Error: Empty command\r\n";
 
     std::string cmd = tokens[0];
@@ -397,4 +442,62 @@ std::string Command_Handler::processCommand(const std::string& commandLine) {
         return handleHmset(tokens, db);
     else 
         return "-Error: Unknown command\r\n";
+}
+
+Command_Handler::Command_Handler() {}
+
+std::string Command_Handler::processBuffer(const std::string& buffer, size_t& bytesConsumed) {
+    std::vector<std::string> tokens;
+    bool isMalformed = false;
+    if (!parseRespFromBuffer(buffer, tokens, bytesConsumed, isMalformed)) {
+        bytesConsumed = 0;
+        return "";
+    }
+    if (isMalformed) {
+        return "-Error: Protocol error: invalid multi-bulk or bulk length\r\n";
+    }
+    return dispatchCommand(tokens);
+}
+
+std::string Command_Handler::processCommand(const std::string& commandLine) {
+    size_t consumed = 0;
+    std::string response = processBuffer(commandLine, consumed);
+    if (consumed == 0 && !commandLine.empty()) {
+        std::istringstream iss(commandLine);
+        std::vector<std::string> tokens;
+        std::string token;
+        while (iss >> token) tokens.push_back(token);
+        if (!tokens.empty()) return dispatchCommand(tokens);
+    }
+    return response.empty() ? "-Error: Incomplete command\r\n" : response;
+}
+
+
+Command_Handler::Command_Handler() {}
+
+std::string Command_Handler::processBuffer(const std::string& buffer, size_t& bytesConsumed) {
+    std::vector<std::string> tokens;
+    bool isMalformed = false;
+    if (!parseRespFromBuffer(buffer, tokens, bytesConsumed, isMalformed)) {
+        bytesConsumed = 0;
+        return "";
+    }
+    if (isMalformed) {
+        return "-Error: Protocol error: invalid multi-bulk or bulk length\r\n";
+    }
+    return dispatchCommand(tokens);
+}
+
+std::string Command_Handler::processCommand(const std::string& commandLine) {
+    size_t consumed = 0;
+    std::string response = processBuffer(commandLine, consumed);
+    if (consumed == 0 && !commandLine.empty()) {
+        std::istringstream iss(commandLine);
+        std::vector<std::string> tokens;
+        std::string token;
+        while (iss >> token) tokens.push_back(token);
+        if (!tokens.empty()) return dispatchCommand(tokens);
+    }
+    return response.empty() ? "-Error: Incomplete command\r\n" : response;
+}
 }

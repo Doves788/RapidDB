@@ -1,0 +1,83 @@
+name: RapidDB CI & Quality Gate
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  build-and-test:
+    name: Build & Functional Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3
+
+      - name: Compile Release Binary
+        run: |
+          make clean
+          make all
+
+      - name: Run Chaos & Protocol Reliability Test Suite
+        run: |
+          python3 tests/chaos_test.py
+
+      - name: Run Memory & Eviction Test Suite
+        run: |
+          python3 tests/memory_leak_test.py
+
+  memory-safety-asan:
+    name: AddressSanitizer & Memory Leak Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3
+
+      - name: Compile with AddressSanitizer (ASan) & UBSan
+        run: |
+          make clean
+          make asan
+
+      - name: Run Reliability Tests under ASan
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1:abort_on_error=1"
+        run: |
+          python3 tests/chaos_test.py
+
+      - name: Run High-Volume 10,000 Key Memory Test under ASan
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1:abort_on_error=1"
+        run: |
+          python3 tests/memory_leak_test.py
+
+  docker-build:
+    name: Docker Containerization Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: rapiddb:latest
+

@@ -1,0 +1,14 @@
+.git
+.gitignore
+.github
+build
+build_asan
+*.o
+*.d
+RapidDB
+RapidDB.exe
+RapidDB-asan
+dump.rapiddb
+tests/__pycache__
+*.log
+

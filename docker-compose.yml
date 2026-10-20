@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  rapiddb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rapiddb
+    ports:
+      - "6379:6379"
+    volumes:
+      - rapiddb_data:/data
+    restart: unless-stopped
+
+volumes:
+  rapiddb_data:
+

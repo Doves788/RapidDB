@@ -11,18 +11,20 @@ Database& Database::getInstance() {
     return instance;
 }
 
-// Common Comands
+// Common Commands
 bool Database::flushAll() {
     std::lock_guard<std::mutex> lock(db_mutex);
     kv_store.clear();
     list_store.clear();
     hash_store.clear();
+    expiry_map.clear();
     return true;
 }
 
 // Key/Value Operations
 void Database::set(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    expiry_map.erase(key);
     kv_store[key] = value;
 }
 
@@ -72,7 +74,8 @@ bool Database::del(const std::string& key) {
     erased |= kv_store.erase(key) > 0;
     erased |= list_store.erase(key) > 0;
     erased |= hash_store.erase(key) > 0;
-    return false;
+    expiry_map.erase(key);
+    return erased;
 }
 
 bool Database::expire(const std::string& key, int seconds) {
@@ -138,9 +141,10 @@ bool Database::rename(const std::string& oldKey, const std::string& newKey) {
     return found;
 }
 
-// List Opreations
+// List Operations
 std::vector<std::string> Database::lget(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = list_store.find(key);
     if (it != list_store.end()) {
         return it->second; 
@@ -150,6 +154,7 @@ std::vector<std::string> Database::lget(const std::string& key) {
 
 long long Database::llen(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = list_store.find(key);
     if (it != list_store.end()) 
         return it->second.size();
@@ -158,16 +163,19 @@ long long Database::llen(const std::string& key) {
 
 void Database::lpush(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     list_store[key].insert(list_store[key].begin(), value);
 }
 
 void Database::rpush(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     list_store[key].push_back(value);
 }
 
 bool Database::lpop(const std::string& key, std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = list_store.find(key);
     if (it != list_store.end() && !it->second.empty()) {
         value = it->second.front();
@@ -179,6 +187,7 @@ bool Database::lpop(const std::string& key, std::string& value) {
 
 bool Database::rpop(const std::string& key, std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = list_store.find(key);
     if (it != list_store.end() && !it->second.empty()) {
         value = it->second.back();
@@ -190,6 +199,7 @@ bool Database::rpop(const std::string& key, std::string& value) {
 
 int Database::lrem(const std::string& key, int count, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     int removed = 0;
     auto it = list_store.find(key);
     if (it == list_store.end()) 
@@ -198,7 +208,7 @@ int Database::lrem(const std::string& key, int count, const std::string& value) 
     auto& lst = it->second;
 
     if (count == 0) {
-        // Remove all occurances
+        // Remove all occurrences
         auto new_end = std::remove(lst.begin(), lst.end(), value);
         removed = std::distance(new_end, lst.end());
         lst.erase(new_end, lst.end());
@@ -231,6 +241,7 @@ int Database::lrem(const std::string& key, int count, const std::string& value) 
 
 bool Database::lindex(const std::string& key, int index, std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = list_store.find(key);
     if (it == list_store.end()) 
         return false;
@@ -247,6 +258,7 @@ bool Database::lindex(const std::string& key, int index, std::string& value) {
 
 bool Database::lset(const std::string& key, int index, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = list_store.find(key);
     if (it == list_store.end()) 
         return false;
@@ -264,12 +276,14 @@ bool Database::lset(const std::string& key, int index, const std::string& value)
 // Hash Operations
 bool Database::hset(const std::string& key, const std::string& field, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     hash_store[key][field] = value;
     return true;
 }
 
 bool Database::hget(const std::string& key, const std::string& field, std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = hash_store.find(key);
     if (it != hash_store.end()) {
         auto f = it->second.find(field);
@@ -283,6 +297,7 @@ bool Database::hget(const std::string& key, const std::string& field, std::strin
 
 bool Database::hexists(const std::string& key, const std::string& field) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = hash_store.find(key);
     if (it != hash_store.end())
         return it->second.find(field) != it->second.end();
@@ -291,6 +306,7 @@ bool Database::hexists(const std::string& key, const std::string& field) {
 
 bool Database::hdel(const std::string& key, const std::string& field) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = hash_store.find(key);
     if (it != hash_store.end())
         return it->second.erase(field) > 0;
@@ -299,6 +315,7 @@ bool Database::hdel(const std::string& key, const std::string& field) {
 
 std::unordered_map<std::string, std::string> Database::hgetall(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     if (hash_store.find(key) != hash_store.end())
         return hash_store[key];
     return {};
@@ -306,6 +323,7 @@ std::unordered_map<std::string, std::string> Database::hgetall(const std::string
 
 std::vector<std::string> Database::hkeys(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     std::vector<std::string> fields;
     auto it = hash_store.find(key);
     if (it != hash_store.end()) {
@@ -317,6 +335,7 @@ std::vector<std::string> Database::hkeys(const std::string& key) {
 
 std::vector<std::string> Database::hvals(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     std::vector<std::string> values;
     auto it = hash_store.find(key);
     if (it != hash_store.end()) {
@@ -326,14 +345,16 @@ std::vector<std::string> Database::hvals(const std::string& key) {
     return values;
 }
 
-long long  Database::hlen(const std::string& key) {
+long long Database::hlen(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     auto it = hash_store.find(key);
     return (it != hash_store.end()) ? it->second.size() : 0;
 }
 
 bool Database::hmset(const std::string& key, const std::vector<std::pair<std::string, std::string>>& fieldValues) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
     for (const auto& pair: fieldValues) {
         hash_store[key][pair.first] = pair.second;
     }
@@ -341,14 +362,14 @@ bool Database::hmset(const std::string& key, const std::vector<std::pair<std::st
 }
 
 /*
-Very simple text based persistance: each line encodes a record
+Very simple text based persistence: each line encodes a record
 
 Memory -> File - dump()
 File -> Memory - load()
 
 K = Key Value
 L = List
-H= Hash
+H = Hash
 */
 bool Database::dump(const std::string& filename) {
     std::lock_guard<std::mutex> lock(db_mutex);
@@ -373,28 +394,6 @@ bool Database::dump(const std::string& filename) {
     return true;
 }
 
-/*
-Key-Value (K)
-kv_store["name"] = "Alice";
-kv_store["city"] = "Berlin";
-
-List (L)
-list_store["fruits"] = {"apple", "banana", "orange"};
-list_store["colors"] = {"red", "green", "blue"};
-
-Hash (H)
-hash_store["user:100"] = {
-    {"name", "Bob"},
-    {"age", "30"},
-    {"email", "bob@example.com"}
-};
-
-hash_store["user:200"] = {
-    {"name", "Eve"},
-    {"age", "25"},
-    {"email", "eve@example.com"}
-};
-*/
 bool Database::load(const std::string& filename) {
     std::lock_guard<std::mutex> lock(db_mutex);
     std::ifstream ifs(filename, std::ios::binary);
@@ -403,38 +402,42 @@ bool Database::load(const std::string& filename) {
     kv_store.clear();
     list_store.clear();
     hash_store.clear();
+    expiry_map.clear();
 
     std::string line;
     while (std::getline(ifs, line)) {
         std::istringstream iss(line);
         char type;
-        iss >> type;
+        if (!(iss >> type)) continue;
         if (type == 'K') {
             std::string key, value;
-            iss >> key >> value;
-            kv_store[key] = value;
+            if (iss >> key >> value) {
+                kv_store[key] = value;
+            }
         } else if (type == 'L') {
             std::string key;
-            iss >> key;
-            std::string item;
-            std::vector<std::string> list;
-            while (iss >> item)
-                list.push_back(item);
-            list_store[key] = list;
+            if (iss >> key) {
+                std::string item;
+                std::vector<std::string> list;
+                while (iss >> item)
+                    list.push_back(item);
+                list_store[key] = list;
+            }
         } else if (type == 'H') {
             std::string key;
-            iss >> key;
-            std::unordered_map<std::string, std::string> hash;
-            std::string pair;
-            while (iss >> pair) {
-                auto pos = pair.find(':');
-                if (pos != std::string::npos) {
-                    std::string field = pair.substr(0, pos);
-                    std::string value = pair.substr(pos+1);
-                    hash[field] = value;
+            if (iss >> key) {
+                std::unordered_map<std::string, std::string> hash;
+                std::string pair;
+                while (iss >> pair) {
+                    auto pos = pair.find(':');
+                    if (pos != std::string::npos) {
+                        std::string field = pair.substr(0, pos);
+                        std::string value = pair.substr(pos + 1);
+                        hash[field] = value;
+                    }
                 }
+                hash_store[key] = hash;
             }
-            hash_store[key] = hash;
         }
     }
     return true;
