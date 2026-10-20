@@ -471,33 +471,3 @@ std::string Command_Handler::processCommand(const std::string& commandLine) {
     }
     return response.empty() ? "-Error: Incomplete command\r\n" : response;
 }
-
-
-Command_Handler::Command_Handler() {}
-
-std::string Command_Handler::processBuffer(const std::string& buffer, size_t& bytesConsumed) {
-    std::vector<std::string> tokens;
-    bool isMalformed = false;
-    if (!parseRespFromBuffer(buffer, tokens, bytesConsumed, isMalformed)) {
-        bytesConsumed = 0;
-        return "";
-    }
-    if (isMalformed) {
-        return "-Error: Protocol error: invalid multi-bulk or bulk length\r\n";
-    }
-    return dispatchCommand(tokens);
-}
-
-std::string Command_Handler::processCommand(const std::string& commandLine) {
-    size_t consumed = 0;
-    std::string response = processBuffer(commandLine, consumed);
-    if (consumed == 0 && !commandLine.empty()) {
-        std::istringstream iss(commandLine);
-        std::vector<std::string> tokens;
-        std::string token;
-        while (iss >> token) tokens.push_back(token);
-        if (!tokens.empty()) return dispatchCommand(tokens);
-    }
-    return response.empty() ? "-Error: Incomplete command\r\n" : response;
-}
-}
